@@ -39,7 +39,7 @@ Balises GPS-like (sur la voie)
 
 ## Contexte
 
-Projet personnel realise au lycee. Le code source d'origine n'est plus disponible, mais l'architecture et le concept sont documentes ici.
+Projet de groupe en enseignement de **Sciences de l'Ingenieur (SI)** en classe de **Terminale** au lycee. Le code source d'origine n'est plus disponible, mais l'architecture et le concept sont documentes ici.
 
 ---
 
