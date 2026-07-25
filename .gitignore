@@ -1,2 +1,46 @@
-# Projet personnel - code source non disponible
-# Ce README documente l'architecture du projet
+# ============================================================
+# Flutter
+# ============================================================
+flutter/.dart_tool/
+flutter/.packages
+flutter/.pub/
+flutter/build/
+flutter/.flutter-plugins
+flutter/.flutter-plugins-dependencies
+flutter/ios/Pods/
+flutter/ios/.symlinks/
+flutter/android/.gradle/
+flutter/android/local.properties
+flutter/android/key.properties
+flutter/android/app/build/
+flutter/.idea/
+flutter/*.iml
+flutter/coverage/
+flutter/.flutter-plugins
+flutter/.flutter-plugins-dependencies
+
+# ============================================================
+# Dart
+# ============================================================
+flutter/.pub-cache/
+flutter/pubspec.lock
+flutter/.dart_tool/
+
+# ============================================================
+# Arduino
+# ============================================================
+arduino/build/
+arduino/*.hex
+arduino/*.elf
+arduino/*.o
+
+# ============================================================
+# IDE
+# ============================================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
