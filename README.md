@@ -2,6 +2,8 @@
 
 **Système d'assistance à l'escalade pour personnes malvoyantes basé sur la géolocalisation UWB Pozyx, le retour haptique par vibreur et la synthèse vocale.**
 
+![Interface d'Émulation EscaBlind](assets/escablind-interface.png)
+
 ---
 
 ## 📌 Concept & Architecture
