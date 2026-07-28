@@ -1,59 +1,59 @@
-/// Donnees d'une balise BLE detectee sur la voie.
-///
-/// Chaque balise est placee a une prise ou un point cle
-/// (depart, relais, chaine d'arrivee). Le RSSI indique
-/// la proximite: plus il est eleve (proche de 0), plus
-/// le grimpeur est pres de la prise.
-class BeaconData {
-  final int id;
-  final String nom;
-  final int rssi;
-  final DateTime detectedAt;
+import 'dart:math';
 
-  const BeaconData({
-    required this.id,
-    required this.nom,
-    required this.rssi,
-    required this.detectedAt,
+/// Position 3D transmise par le Tag Pozyx UWB via l'Arduino.
+class PozyxPosition {
+  final double x; // cm
+  final double y; // cm
+  final double z; // cm (hauteur)
+  final DateTime timestamp;
+
+  const PozyxPosition({
+    required this.x,
+    required this.y,
+    required this.z,
+    required this.timestamp,
   });
 
-  /// Distance estimee en metres a partir du RSSI.
-  /// Formule simplifiee: d = 10^((TxPower - RSSI) / (20 + n))
-  /// avec TxPower = -59 dBm et n = 2 (facteur d'atténuation).
-  double get estimatedDistance {
-    const txPower = -59;
-    const n = 2.0;
-    return 10.0 * ((txPower - rssi) / (20.0 + n));
+  /// Calcule la distance 3D euclidienne (en cm) vers un point cible.
+  double distanceTo(double targetX, double targetY, double targetZ) {
+    final dx = targetX - x;
+    final dy = targetY - y;
+    final dz = targetZ - z;
+    return sqrt(dx * dx + dy * dy + dz * dz);
   }
 
-  /// Constructeur depuis une trame serie Arduino.
-  /// Format attendu: "#POS:3" ou "3"
-  factory BeaconData.fromSerial(String line) {
-    final cleaned = line.replaceAll('#POS:', '').trim();
-    final id = int.tryParse(cleaned) ?? 0;
-    return BeaconData(
-      id: id,
-      nom: 'Prise $id',
-      rssi: -50 - (id * 5), // RSSI simule
-      detectedAt: DateTime.now(),
-    );
+  /// Constructeur depuis la trame série BLE `#POS_UWB:120,80,150`
+  factory PozyxPosition.fromSerial(String line) {
+    final cleaned = line.replaceAll('#POS_UWB:', '').trim();
+    final parts = cleaned.split(',');
+    if (parts.length >= 3) {
+      final px = double.tryParse(parts[0]) ?? 0.0;
+      final py = double.tryParse(parts[1]) ?? 0.0;
+      final pz = double.tryParse(parts[2]) ?? 0.0;
+      return PozyxPosition(
+        x: px,
+        y: py,
+        z: pz,
+        timestamp: DateTime.now(),
+      );
+    }
+    return PozyxPosition(x: 0, y: 0, z: 0, timestamp: DateTime.now());
   }
 
   @override
-  String toString() => 'BeaconData(id: $id, nom: $nom, rssi: $rssi)';
+  String toString() => 'PozyxPosition(x: ${x.toStringAsFixed(1)}, y: ${y.toStringAsFixed(1)}, z: ${z.toStringAsFixed(1)})';
 }
 
-/// Enumeration des types de messages provenant de l'Arduino.
+/// Types de messages de communication entre l'Arduino et l'application.
 enum ArduinoMessageType {
-  position,     // #POS:<id>
-  distance,     // #DIST:<cm>
-  vibration,    // #VIB:<valeur>
-  status,       // #STAT:<msg>
-  error,        // #ERR:<code>
+  pozyxPosition, // #POS_UWB:<x>,<y>,<z>
+  vibrationAck,  // #VIB:<valeur>
+  status,        // #STAT:<msg>
+  error,         // #ERR:<code>
   unknown,
 }
 
-/// Message brut provenant de l'Arduino via la liaison serie.
+/// Structure d'un message brut reçu de l'Arduino.
 class ArduinoMessage {
   final ArduinoMessageType type;
   final String raw;
@@ -65,24 +65,17 @@ class ArduinoMessage {
     required this.value,
   });
 
-  /// Parse une ligne serie en un message structure.
   factory ArduinoMessage.parse(String line) {
     final trimmed = line.trim();
-    if (trimmed.startsWith('#POS:')) {
+    if (trimmed.startsWith('#POS_UWB:')) {
       return ArduinoMessage(
-        type: ArduinoMessageType.position,
+        type: ArduinoMessageType.pozyxPosition,
         raw: trimmed,
-        value: trimmed.substring(5),
-      );
-    } else if (trimmed.startsWith('#DIST:')) {
-      return ArduinoMessage(
-        type: ArduinoMessageType.distance,
-        raw: trimmed,
-        value: trimmed.substring(6),
+        value: trimmed.substring(9),
       );
     } else if (trimmed.startsWith('#VIB:')) {
       return ArduinoMessage(
-        type: ArduinoMessageType.vibration,
+        type: ArduinoMessageType.vibrationAck,
         raw: trimmed,
         value: trimmed.substring(5),
       );

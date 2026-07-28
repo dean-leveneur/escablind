@@ -1,16 +1,16 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../models/beacon_data.dart';
 import '../services/ble_service.dart';
 import '../services/audio_service.dart';
 
-/// Ecran de guidage pendant l'ascension.
+/// Écran de guidage en temps réel pendant l'ascension.
 ///
-/// Affiche en temps reel la balise detectee, la distance
-/// au mur, et les alertes. Le guidage vocal est declenche
-/// automatiquement a chaque detection de balise.
+/// Affiche :
+///   1. Les coordonnées UWB Pozyx temps réel de l'Arduino.
+///   2. La prise cible active et l'écart relatif (dx, dy, dz).
+///   3. L'intensité du vibreur haptique PWM (0-255).
+///   4. Boutons pour réécouter la consigne vocale orale.
 class GuidanceScreen extends StatefulWidget {
   const GuidanceScreen({super.key});
 
@@ -19,279 +19,229 @@ class GuidanceScreen extends StatefulWidget {
 }
 
 class _GuidanceScreenState extends State<GuidanceScreen> {
-  StreamSubscription<String>? _audioSubscription;
-
   @override
   void initState() {
     super.initState();
-    // Ecoute la file audio pour les messages en attente
-    _audioSubscription = context
-        .read<AudioService>()
-        .messageStream
-        .listen((message) {
-      context.read<AudioService>().speak(message);
+    // Énoncé vocal au démarrage du guidage
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ble = context.read<BleService>();
+      final audio = context.read<AudioService>();
+      if (ble.selectedRoute != null) {
+        audio.speak('Début du guidage pour la voie ${ble.selectedRoute!.title}.');
+        if (ble.currentTargetWaypoint != null) {
+          audio.announceRelativeTarget(ble.currentPosition, ble.currentTargetWaypoint!);
+        }
+      }
     });
-  }
-
-  @override
-  void dispose() {
-    _audioSubscription?.cancel();
-    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0D1B2A),
+      backgroundColor: const Color(0xFF0F172A),
+      appBar: AppBar(
+        title: const Text('Guidage Temps Réel'),
+        backgroundColor: const Color(0xFF1E293B),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.volume_up, color: Colors.blueAccent),
+            tooltip: 'Annoncer la position orale',
+            onPressed: () {
+              final ble = context.read<BleService>();
+              final audio = context.read<AudioService>();
+              if (ble.currentTargetWaypoint != null) {
+                audio.announceRelativeTarget(ble.currentPosition, ble.currentTargetWaypoint!);
+              }
+            },
+          ),
+        ],
+      ),
       body: SafeArea(
-        child: Column(
-          children: [
-            // Barre d'etat
-            _StatusBar(),
-            Expanded(
-              child: Center(
-                child: Consumer2<BleService, AudioService>(
-                  builder: (context, ble, audio, _) {
-                    final beacons = ble.beaconsDetected;
-                    final lastBeacon = beacons.isNotEmpty
-                        ? beacons.last
-                        : null;
+        child: Consumer2<BleService, AudioService>(
+          builder: (context, ble, audio, _) {
+            final route = ble.selectedRoute;
+            final target = ble.currentTargetWaypoint;
+            final pos = ble.currentPosition;
+            final pwm = ble.lastVibrationIntensity;
 
-                    return Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
+            if (route == null || target == null) {
+              return const Center(
+                child: Text('Aucun parcours sélectionné.', style: TextStyle(color: Colors.white)),
+              );
+            }
+
+            final distCm = pos != null ? pos.distanceTo(target.x, target.y, target.z) : 0.0;
+            final dx = pos != null ? target.x - pos.x : 0.0;
+            final dz = pos != null ? target.z - pos.z : 0.0;
+
+            return Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Carte Prise Cible
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E293B),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.blueAccent, width: 2),
+                    ),
+                    child: Column(
                       children: [
-                        // Balise courante
-                        if (lastBeacon != null)
-                          _BeaconIndicator(beacon: lastBeacon)
-                        else
-                          const Text(
-                            'En attente de balise...',
-                            style: TextStyle(
-                              color: Colors.white54,
-                              fontSize: 24,
-                            ),
-                          ),
-
-                        const SizedBox(height: 48),
-
-                        // Commandes vocales
+                        Text(
+                          'Prise ${ble.currentWaypointIndex + 1} / ${route.count}',
+                          style: const TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.bold, fontSize: 16),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          target.name,
+                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 26),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 12),
                         Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
                           children: [
-                            _ControlButton(
-                              icon: Icons.hearing,
-                              label: 'Répéter',
-                              onTap: () {
-                                if (lastBeacon != null) {
-                                  audio.announceBeacon(
-                                    lastBeacon.id,
-                                    lastBeacon.nom,
-                                  );
-                                }
-                              },
+                            _MetricItem(label: 'Distance Cible', value: '${distCm.round()} cm'),
+                            _MetricItem(label: 'Décalage Ht (Z)', value: '${dz.round()} cm'),
+                            _MetricItem(label: 'Décalage Lat (X)', value: '${dx.round()} cm'),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Jauge Vibreur Haptique (PWM)
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.black38,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(Icons.vibration, color: Colors.amber),
+                                SizedBox(width: 8),
+                                Text('Intensité Vibreur Arduino', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                              ],
                             ),
-                            const SizedBox(width: 16),
-                            _ControlButton(
-                              icon: Icons.mic,
-                              label: 'Infos voie',
-                              onTap: () {
-                                audio.speak(
-                                  'Voie équipée de 6 points d\'ancrage. '
-                                  'Départ au niveau 1, arrivée au niveau 6.',
-                                );
-                              },
+                            Text('PWM $pwm / 255', style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold)),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: LinearProgressIndicator(
+                            value: pwm / 255.0,
+                            minHeight: 12,
+                            backgroundColor: Colors.white10,
+                            color: Colors.amber,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Position Pozyx UWB actuelle
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.black26,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.radar, color: Colors.greenAccent),
+                        const SizedBox(width: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Position Arduino Pozyx UWB :', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                            Text(
+                              pos != null
+                                  ? 'X: ${pos.x.round()} cm, Y: ${pos.y.round()} cm, Z: ${pos.z.round()} cm'
+                                  : 'En attente des trames Pozyx...',
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
                             ),
                           ],
                         ),
                       ],
-                    );
-                  },
-                ),
-              ),
-            ),
+                    ),
+                  ),
+                  const Spacer(),
 
-            // Historique des balises
-            _BeaconHistory(),
-          ],
+                  // Navigation Prises
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: ble.currentWaypointIndex > 0 ? () => ble.previousWaypoint() : null,
+                          icon: const Icon(Icons.arrow_back),
+                          label: const Text('Prise préc.'),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            backgroundColor: Colors.white10,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            if (ble.currentWaypointIndex < route.count - 1) {
+                              ble.nextWaypoint();
+                              audio.announceRelativeTarget(ble.currentPosition, ble.currentTargetWaypoint!);
+                            } else {
+                              audio.announceRouteCompleted(route.title);
+                            }
+                          },
+                          icon: const Icon(Icons.arrow_forward),
+                          label: Text(ble.currentWaypointIndex < route.count - 1 ? 'Prise suiv.' : 'Terminer'),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            backgroundColor: const Color(0xFF16A34A),
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
         ),
       ),
     );
   }
 }
 
-/// Barre d'etat superieure.
-class _StatusBar extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Consumer<BleService>(
-      builder: (context, ble, _) {
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          color: Colors.black26,
-          child: Row(
-            children: [
-              Icon(
-                Icons.bluetooth_connected,
-                color: ble.isConnected ? Colors.greenAccent : Colors.red,
-                size: 20,
-              ),
-              const SizedBox(width: 8),
-              const Spacer(),
-              IconButton(
-                icon: const Icon(Icons.stop, color: Colors.white70),
-                tooltip: 'Arrêter guidage',
-                onPressed: () {
-                  context.read<AudioService>().speak('Guidage terminé.');
-                  Navigator.pop(context);
-                },
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-}
+class _MetricItem extends StatelessWidget {
+  final String label;
+  final String value;
 
-/// Indicateur visuel de la balise courante.
-class _BeaconIndicator extends StatelessWidget {
-  final BeaconData beacon;
-
-  const _BeaconIndicator({required this.beacon});
+  const _MetricItem({required this.label, required this.value});
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Icon(
-          Icons.location_on,
-          color: Colors.greenAccent,
-          size: 64,
-        ),
-        const SizedBox(height: 16),
-        Text(
-          'Prise n°${beacon.id}',
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 36,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          beacon.nom,
-          style: const TextStyle(
-            color: Colors.white70,
-            fontSize: 22,
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          'RSSI: ${beacon.rssi} dBm',
-          style: const TextStyle(
-            color: Colors.white38,
-            fontSize: 16,
-          ),
-        ),
+        Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+        const SizedBox(height: 2),
+        Text(label, style: const TextStyle(color: Colors.white54, fontSize: 11)),
       ],
-    );
-  }
-}
-
-/// Bouton de controle.
-class _ControlButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  const _ControlButton({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 120,
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.1),
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Column(
-          children: [
-            Icon(icon, color: Colors.white, size: 32),
-            const SizedBox(height: 8),
-            Text(
-              label,
-              style: const TextStyle(color: Colors.white70, fontSize: 14),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Historique des balises detectees.
-class _BeaconHistory extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Consumer<BleService>(
-      builder: (context, ble, _) {
-        final beacons = ble.beaconsDetected;
-        if (beacons.isEmpty) return const SizedBox.shrink();
-
-        return Container(
-          height: 100,
-          decoration: BoxDecoration(
-            color: Colors.black26,
-            border: Border(
-              top: BorderSide(color: Colors.white12),
-            ),
-          ),
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            itemCount: beacons.length,
-            itemBuilder: (context, index) {
-              final b = beacons[index];
-              final isLast = index == beacons.length - 1;
-              return Container(
-                margin: const EdgeInsets.symmetric(horizontal: 4),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: isLast ? Colors.greenAccent.withOpacity(0.2) : Colors.white10,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      '#${b.id}',
-                      style: TextStyle(
-                        color: isLast ? Colors.greenAccent : Colors.white70,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    Text(
-                      '${b.rssi} dBm',
-                      style: const TextStyle(
-                        color: Colors.white38,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
-        );
-      },
     );
   }
 }

@@ -1,266 +1,145 @@
 /*
  * EscaBlind - Firmware Arduino
  * 
- * Detecte les balises BLE placees sur la voie d'escalade,
- * lit les entrees analogiques (capteurs), et transmet
- * la position au smartphone via liaison serie.
+ * Ce code gère :
+ *   1. La lecture des coordonnées 3D du tag UWB Pozyx (x, y, z en cm).
+ *   2. La transmission des coordonnées à l'application mobile via le module BLE (HM-10 / ESP32).
+ *   3. La réception des consignes d'intensité de vibration (#VIB_INT:<0-255>) envoyées par l'app.
+ *   4. La commande PWM d'un vibreur haptique connecté sur la carte Arduino.
  * 
- * Materiel:
- *   - Arduino Uno / Nano BLE 33
- *   - Module BLE (HM-10 / HC-05)
- *   - Capteur ultrason (distance au mur)
- *   - Capteur de vibration (detection de chute)
- *   - LED temoin (signalisation)
- * 
- * Protocole serie (115200 bauds):
- *   #POS:<id_balise>      - Detection de balise
- *   #DIST:<cm>            - Distance au mur
- *   #VIB:<seuil>          - Vibration detectee
- *   #STAT:<msg>           - Message d'etat
- *   #ERR:<code>           - Erreur
+ * Matériel :
+ *   - Carte Arduino Uno / ESP32
+ *   - Shield / Module UWB Pozyx
+ *   - Module Bluetooth BLE (HM-10 / BLE 4.2+)
+ *   - Vibreur haptique (Pin PWM 5)
  */
 
-// ============================================================
-// Pins
-// ============================================================
-const int PIN_LED          = 13;
-const int PIN_DIST_TRIG    = 9;
-const int PIN_DIST_ECHO    = 10;
-const int PIN_VIBRATION    = A0;
-const int PIN_BATTERY      = A1;
+#include <Arduino.h>
 
 // ============================================================
-// Constantes
+// Broches & Configuration
 // ============================================================
-const int BAUD_RATE        = 115200;
-const int LOOP_DELAY_MS    = 500;
-const int VIB_THRESHOLD    = 512;   // seuil de vibration significative
-const int DIST_MAX_CM      = 200;   // portee max du capteur ultrason
+const int PIN_VIBREUR     = 5;    // Pin PWM pour contrôle de l'intensité du vibreur
+const int PIN_LED_BLE     = 13;   // Témoin LED de connexion/activité
+
+const long BAUD_RATE      = 115200;
+const int LOOP_DELAY_MS   = 200;  // Période d'échantillonnage (5 Hz)
 
 // ============================================================
-// Simulation de balises BLE
+// Variables de position UWB Pozyx
 // ============================================================
+int positionX = 120;  // cm
+int positionY = 80;   // cm
+int positionZ = 50;   // cm
 
-// Structure decrivant une balise sur la voie
-struct Beacon {
-  int id;
-  const char* nom;
-  int rssi_simule;       // puissance simulee (plus proche = plus fort)
-};
-
-// Tableau de balises simulees (voie fictive de 6 degres)
-Beacon beacons[] = {
-  {1, "PRISE_DEPART",   -45},
-  {2, "PRISE_01",       -55},
-  {3, "PRISE_02",       -50},
-  {4, "RELAIS_01",      -60},
-  {5, "PRISE_03",       -48},
-  {6, "CHAINE_ARRIVEE", -42},
-};
-
-const int NB_BEACONS = sizeof(beacons) / sizeof(beacons[0]);
-
-// Index de la balise actuellement detectee
-int beacon_actif = -1;
+int vibrationIntensity = 0; // 0 à 255 (PWM)
 
 // ============================================================
 // Prototypes
 // ============================================================
-void simulerDetectionBalise();
-void lireDistance();
-void lireVibration();
-void lireBatterie();
-void envoyerPosition(int id);
-void envoyerDistance(int cm);
-void envoyerVibration(int valeur);
-void envoyerEtat(const char* msg);
-void envoyerErreur(int code);
+void lirePositionPozyxUWB();
+void envoyerPositionUWB();
+void traiterCommandesEntrantes();
+void appliquerVibration(int intensite);
 
 // ============================================================
 // Setup
 // ============================================================
 void setup() {
   Serial.begin(BAUD_RATE);
-  pinMode(PIN_LED, OUTPUT);
-  pinMode(PIN_DIST_TRIG, OUTPUT);
-  pinMode(PIN_DIST_ECHO, INPUT);
-  pinMode(PIN_VIBRATION, INPUT);
-  pinMode(PIN_BATTERY, INPUT);
 
-  digitalWrite(PIN_LED, HIGH);
+  pinMode(PIN_VIBREUR, OUTPUT);
+  pinMode(PIN_LED_BLE, OUTPUT);
+
+  // Test du vibreur au démarrage (bref retour haptique)
+  analogWrite(PIN_VIBREUR, 150);
+  digitalWrite(PIN_LED_BLE, HIGH);
   delay(300);
-  digitalWrite(PIN_LED, LOW);
+  analogWrite(PIN_VIBREUR, 0);
+  digitalWrite(PIN_LED_BLE, LOW);
 
-  envoyerEtat("ESCABLIND_INIT_OK");
-  envoyerEtat("NB_BALISES:" + String(NB_BEACONS));
+  Serial.println("#STAT:ESCABLIND_POZYX_READY");
 }
 
 // ============================================================
-// Loop principale
+// Boucle principale
 // ============================================================
 void loop() {
-  // 1. Detection des balises (simulation BLE)
-  simulerDetectionBalise();
+  // 1. Lecture des coordonnées 3D via les balises UWB Pozyx
+  lirePositionPozyxUWB();
 
-  // 2. Lecture des capteurs
-  lireDistance();
-  lireVibration();
+  // 2. Envoi de la position à l'application Flutter via BLE
+  envoyerPositionUWB();
 
-  // 3. Niveau de batterie (toutes les 5 iterations)
-  static int compteur = 0;
-  if (++compteur >= 5) {
-    compteur = 0;
-    lireBatterie();
-  }
+  // 3. Lecture et exécution des commandes reçues depuis l'application
+  traiterCommandesEntrantes();
+
+  // 4. Mise à jour de l'intensité du vibreur haptique
+  appliquerVibration(vibrationIntensity);
 
   delay(LOOP_DELAY_MS);
 }
 
 // ============================================================
-// Simulation de balise BLE
+// Lecture de la position UWB Pozyx (Simulation/API)
 // ============================================================
-void simulerDetectionBalise() {
+void lirePositionPozyxUWB() {
   /*
-   * En conditions reelles, le module BLE scannerait les balises
-   * advertisees et lirait leur RSSI. Ici on simule un balayage
-   * cyclique des balises pour representer le deplacement du
-   * grimpeur le long de la voie.
+   * En condition réelle, on utilise la bibliothèque Pozyx :
+   * Pozyx.getCoordinates(&coordinates)
+   * 
+   * Ici, on simule une progression progressive du grimpeur
+   * le long de la voie d'escalade.
    */
-  static int index = 0;
-  static unsigned long last_scan = 0;
-  unsigned long now = millis();
+  static int step = 0;
+  step++;
 
-  // Changement de balise toutes les ~3 secondes (simulation)
-  if (now - last_scan > 3000) {
-    last_scan = now;
+  // Trajectoire simulée en 3D
+  positionX = 100 + (int)(30 * sin(step * 0.1));
+  positionY = 50 + step * 2;
+  positionZ = 150 + step * 3;
 
-    // Change de balise cycliquement
-    index = (index + 1) % NB_BEACONS;
+  if (positionZ > 400) {
+    step = 0; // Réinitialisation au départ de la voie
+  }
+}
 
-    if (beacon_actif != index) {
-      beacon_actif = index;
-      envoyerPosition(beacons[index].id);
-      envoyerEtat(beacons[index].nom);
+// ============================================================
+// Transmission de la position UWB via BLE
+// ============================================================
+void envoyerPositionUWB() {
+  Serial.print("#POS_UWB:");
+  Serial.print(positionX);
+  Serial.print(",");
+  Serial.print(positionY);
+  Serial.print(",");
+  Serial.println(positionZ);
+}
 
-      // Clignotement LED pour signaler detection
-      digitalWrite(PIN_LED, HIGH);
-      delay(100);
-      digitalWrite(PIN_LED, LOW);
+// ============================================================
+// Traitement des consignes envoyées par l'app Flutter
+// Format : #VIB_INT:<0-255>
+// ============================================================
+void traiterCommandesEntrantes() {
+  while (Serial.available() > 0) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+
+    if (cmd.startsWith("#VIB_INT:")) {
+      int val = cmd.substring(9).toInt();
+      vibrationIntensity = constrain(val, 0, 255);
+    } else if (cmd.startsWith("#TARGET:")) {
+      // Notification de nouvelle cible enregistrée
+      digitalWrite(PIN_LED_BLE, HIGH);
+      delay(50);
+      digitalWrite(PIN_LED_BLE, LOW);
     }
   }
 }
 
 // ============================================================
-// Lecture capteur de distance (ultrason)
+// Contrôle de l'intensité PWM du vibreur haptique
 // ============================================================
-void lireDistance() {
-  /*
-   * Envoie une impulsion sur le capteur HC-SR04 et calcule
-   * la distance en cm. En simulation, renvoie une valeur
-   * decroissante puis croissante (approche du mur puis
-   * eloignement).
-   */
-  static int sim_dist = 100;
-  static int dir = -1;
-
-  // Envoi impulsion
-  digitalWrite(PIN_DIST_TRIG, LOW);
-  delayMicroseconds(2);
-  digitalWrite(PIN_DIST_TRIG, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(PIN_DIST_TRIG, LOW);
-
-  // Lecture de la duree de l'echo
-  long duree = pulseIn(PIN_DIST_ECHO, HIGH, 30000); // timeout 30ms
-
-  int distance;
-  if (duree == 0) {
-    // Pas d'echo (simulation)
-    sim_dist += dir * 5;
-    if (sim_dist < 20) dir = 1;
-    if (sim_dist > 150) dir = -1;
-    distance = sim_dist;
-  } else {
-    // Mesure reelle: vitesse du son = 343 m/s
-    distance = duree * 0.034 / 2;
-  }
-
-  envoyerDistance(distance);
-}
-
-// ============================================================
-// Lecture capteur de vibration
-// ============================================================
-void lireVibration() {
-  /*
-   * Detecte les vibrations (chute, impact, geste brusque).
-   * En conditions reelles, on lit la pin analogique.
-   */
-  int valeur = analogRead(PIN_VIBRATION);
-
-  // Simulation: valeur sinusoidale basse
-  static int phase = 0;
-  phase = (phase + 10) % 360;
-  int sim = 300 + (int)(200 * sin(phase * 3.14159 / 180));
-
-  if (valeur < 50) {
-    // Aucun capteur branche -> utiliser la simulation
-    valeur = sim;
-  }
-
-  if (valeur > VIB_THRESHOLD) {
-    envoyerVibration(valeur);
-    // Risque de chute detecte
-    if (valeur > 700) {
-      envoyerErreur(3); // Code 3 = chute probable
-    }
-  }
-}
-
-// ============================================================
-// Lecture niveau de batterie
-// ============================================================
-void lireBatterie() {
-  int raw = analogRead(PIN_BATTERY);
-  // Conversion approximative (depend du pont diviseur)
-  // 0-1023 -> 0-5V
-  float tension = raw * (5.0 / 1023.0);
-  int pourcentage = (int)((tension / 5.0) * 100);
-  if (pourcentage > 100) pourcentage = 100;
-  if (pourcentage < 0) pourcentage = 0;
-
-  envoyerEtat("BAT:" + String(pourcentage) + "%");
-}
-
-// ============================================================
-// Fonctions d'envoi serie
-// ============================================================
-void envoyerPosition(int id) {
-  Serial.print("#POS:");
-  Serial.println(id);
-}
-
-void envoyerDistance(int cm) {
-  Serial.print("#DIST:");
-  Serial.println(cm);
-}
-
-void envoyerVibration(int valeur) {
-  Serial.print("#VIB:");
-  Serial.println(valeur);
-}
-
-void envoyerEtat(const char* msg) {
-  Serial.print("#STAT:");
-  Serial.println(msg);
-}
-
-void envoyerEtat(const String& msg) {
-  Serial.print("#STAT:");
-  Serial.println(msg);
-}
-
-void envoyerErreur(int code) {
-  Serial.print("#ERR:");
-  Serial.println(code);
+void appliquerVibration(int intensite) {
+  analogWrite(PIN_VIBREUR, intensite);
 }

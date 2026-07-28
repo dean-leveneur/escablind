@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'screens/home_screen.dart';
+import 'screens/route_creation_screen.dart';
+import 'screens/route_selection_screen.dart';
 import 'screens/guidance_screen.dart';
 import 'services/ble_service.dart';
 import 'services/audio_service.dart';
@@ -11,11 +13,7 @@ void main() {
   runApp(const EscaBlindApp());
 }
 
-/// Application EscaBlind - Guidage audio pour l'escalade
-///
-/// Point d'entree de l'application Flutter. Fournit les services
-/// BLE et Audio via Provider, et configure le routage entre les
-/// ecrans.
+/// Application EscaBlind - Guidage Haptique et Vocal pour L'Escalade Inclusive.
 class EscaBlindApp extends StatelessWidget {
   const EscaBlindApp({super.key});
 
@@ -35,20 +33,16 @@ class EscaBlindApp extends StatelessWidget {
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF1A237E),
+            seedColor: const Color(0xFF0F172A),
             brightness: Brightness.dark,
           ),
           useMaterial3: true,
-          // Large typography pour accessibilite
-          textTheme: const TextTheme(
-            displayLarge: TextStyle(fontSize: 48, fontWeight: FontWeight.bold),
-            bodyLarge: TextStyle(fontSize: 22),
-            bodyMedium: TextStyle(fontSize: 18),
-          ),
         ),
         initialRoute: '/',
         routes: {
           '/': (context) => const HomeScreen(),
+          '/create-route': (context) => const RouteCreationScreen(),
+          '/select-route': (context) => const RouteSelectionScreen(),
           '/guidance': (context) => const GuidanceScreen(),
         },
       ),
