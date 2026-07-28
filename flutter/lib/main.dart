@@ -5,7 +5,6 @@ import 'screens/home_screen.dart';
 import 'screens/guidance_screen.dart';
 import 'services/ble_service.dart';
 import 'services/audio_service.dart';
-import 'models/beacon_data.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
